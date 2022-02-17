@@ -33,9 +33,6 @@ BATCH_SIZE  = 128
 
 N_EPOCHS = 20
 
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.preprocessing.text import Tokenizer
-
 import urllib3
 import zipfile
 import shutil
@@ -161,68 +158,73 @@ train_df = pd.concat([df1, df2], axis=1)
 
 print('Translation Pair :',len(train_df)) # 리뷰 개수 출력
 
-raw_src  = train_df['SRC']
-raw_trg  = train_df['TRG']
+raw_src = train_df['SRC'].tolist()
+raw_trg = train_df['TRG'].tolist()
 
-src_sentence  = raw_src.apply(lambda x: "<SOS> " + str(x) + " <EOS>")
-trg_sentence  = raw_trg.apply(lambda x: "<SOS> "+ x + " <EOS>")
+train_df.to_csv('/content/Translation_dataset.csv',index = False)
 
-filters = '!"#$%&()*+,-./:;=?@[\\]^_`{|}~\t\n'
-oov_token = '<unk>'
+!python -m spacy download en
+!python -m spacy download fr
+import spacy
+spacy_en = spacy.load('en')
+spacy_fr = spacy.load('fr')
 
-# Define tokenizer
-SRC_tokenizer = tf.keras.preprocessing.text.Tokenizer(filters = filters, oov_token=oov_token)
-TRG_tokenizer = tf.keras.preprocessing.text.Tokenizer(filters = filters, oov_token=oov_token)
+def tokenize_en(text):
+    """
+    Tokenizes English text from a string into a list of strings
+    """
+    return [tok.text for tok in spacy_en.tokenizer(text)]
 
-SRC_tokenizer.fit_on_texts(src_sentence)
-TRG_tokenizer.fit_on_texts(trg_sentence)
+def tokenize_fr(text):
+    """
+    Tokenizes French text from a string into a list of strings
+    """
+    return [tok.text for tok in spacy_fr.tokenizer(text)]
 
-n_enc_vocab = len(SRC_tokenizer.word_index) + 1
-n_dec_vocab = len(TRG_tokenizer.word_index) + 1
+SRC_tokenizer = data.Field(sequential=True, use_vocab=True, lower=True, tokenize=tokenize_en,
+    batch_first=True, init_token="<SOS>", eos_token="<EOS>", fix_length=ENCODER_LEN)
+
+TRG_tokenizer = data.Field(sequential=True, use_vocab=True, lower=True, tokenize=tokenize_fr,
+    batch_first=True, init_token="<SOS>", eos_token="<EOS>", fix_length=DECODER_LEN)
+
+trainset = data.TabularDataset(
+        path='/content/Translation_dataset.csv', format='csv', skip_header=False,
+        fields=[('SRC', SRC_tokenizer),('TRG', TRG_tokenizer)])
+
+print(vars(trainset[2]))
+
+print('훈련 샘플의 개수 : {}'.format(len(trainset)))
+
+SRC_tokenizer.build_vocab(trainset.SRC, min_freq = 2) # 단어 집합 생성
+TRG_tokenizer.build_vocab(trainset.TRG, min_freq = 2) # 단어 집합 생성
+
+# Difine HyperParameter
+n_enc_vocab = len(SRC_tokenizer.vocab)
+n_dec_vocab = len(TRG_tokenizer.vocab)
 
 print('Encoder 단어 집합의 크기 :',n_enc_vocab)
 print('Decoder 단어 집합의 크기 :',n_dec_vocab)
 
-lines = [
-  "It is winter and the weather is very cold.",
-  "Will this Christmas be a white Christmas?",
-  "Be careful not to catch a cold in winter and have a happy new year."
-]
-for line in lines:
-    txt_2_ids = SRC_tokenizer.texts_to_sequences([line])
-    ids_2_txt = SRC_tokenizer.sequences_to_texts(txt_2_ids)
-    print("Input     :", line)
-    print("txt_2_ids :", txt_2_ids)
-    print("ids_2_txt :", ids_2_txt[0],"\n")
 
-lines = [
-  "C'est l'hiver et il fait très froid.",
-  "Ce Noël sera-t-il un Noël blanc ?",
-  "Attention à ne pas attraper froid en hiver et bonne année."
-]
-for line in lines:
-    txt_2_ids = TRG_tokenizer.texts_to_sequences([line])
-    ids_2_txt = TRG_tokenizer.sequences_to_texts(txt_2_ids)
-    print("Input     :", line)
-    print("txt_2_ids :", txt_2_ids)
-    print("ids_2_txt :", ids_2_txt[0],"\n")
-    
-# 토큰화 / 정수 인코딩 / 시작 토큰과 종료 토큰 추가 / 패딩
-tokenized_inputs  = SRC_tokenizer.texts_to_sequences(src_sentence)
-tokenized_outputs = TRG_tokenizer.texts_to_sequences(trg_sentence)
+SRC_PAD_TOK, SRC_UNK_TOK = SRC_tokenizer.vocab.stoi['<pad>'], SRC_tokenizer.vocab.stoi['<unk>']
+PAD_TOK, START_TOK, END_TOK, UNK_TOK = TRG_tokenizer.vocab.stoi['<pad>'], TRG_tokenizer.vocab.stoi['<SOS>'], TRG_tokenizer.vocab.stoi['<EOS>'], TRG_tokenizer.vocab.stoi['<unk>']
 
-# 패딩
-tkn_sources = tf.keras.preprocessing.sequence.pad_sequences(tokenized_inputs,  maxlen=ENCODER_LEN, padding='post', truncating='post')
-tkn_targets = tf.keras.preprocessing.sequence.pad_sequences(tokenized_outputs, maxlen=DECODER_LEN, padding='post', truncating='post')
+"""
+print(SRC_tokenizer.vocab.stoi[SRC_tokenizer.pad_token])
+print(SRC_tokenizer.vocab.stoi[SRC_tokenizer.init_token])
+print(SRC_tokenizer.vocab.stoi[SRC_tokenizer.eos_token])
 
-tensors_src   = torch.tensor(tkn_sources).to(device)
-tensors_trg   = torch.tensor(tkn_targets).to(device)
+print(SRC_tokenizer.vocab.itos[1])
+print(SRC_tokenizer.vocab.itos[2])
+print(SRC_tokenizer.vocab.itos[3])
+"""
+# Define dataloader
+# dataloader batch has text and target item
 
-from torch.utils.data import TensorDataset   # 텐서데이터셋
-from torch.utils.data import DataLoader      # 데이터로더
+dataloader = data.BucketIterator(
+        trainset, batch_size=BATCH_SIZE,
+        shuffle=True, repeat=False, sort=False, device = device)
 
-dataset    = TensorDataset(tensors_src, tensors_trg)
-dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # Hyper-parameters
 n_layers  = 2     # 6
@@ -600,14 +602,15 @@ def train(epoch, model, dataloader, optimizer, criterion, clip):
     epoch_loss = 0
     
     with tqdm_notebook(total=len(dataloader), desc=f"Train {epoch+1}") as pbar:    
-        for batch_idx, samples in enumerate(dataloader):
-            src_inputs, trg_outputs = samples
+        for batch in dataloader:
+            src_inputs  = batch.SRC.to(device)
+            trg_outputs = batch.TRG.to(device)
 
             with torch.set_grad_enabled(True):
                 # Transformer에 입력
                 logits_lm = model(src_inputs, trg_outputs)
 
-                pad = torch.LongTensor(trg_outputs.size(0), 1).fill_(0).to(device)
+                pad = torch.LongTensor(trg_outputs.size(0), 1).fill_(PAD_TOK).to(device)
                 preds_id = torch.transpose(logits_lm,1,2)
                 labels_lm = torch.cat((trg_outputs[:, 1:], pad), -1)
 
@@ -674,12 +677,36 @@ trained_model = Transformer(
     dropout     = dropout).to(device)
 trained_model.load_state_dict(torch.load('./checkpoints/transformermodel.pt'))
 
+def stoi(vocab, token, max_len):
+    #
+    indices=[]
+    token.extend(['<pad>'] * (max_len - len(token)))
+    for string in token:
+        if string in vocab:
+            i = vocab.index(string)
+        else:
+            i = 0
+        indices.append(i)
+    return torch.LongTensor(indices).unsqueeze(0)
+
+def itos(vocab, indices):
+    text = []
+    for i in indices.cpu()[0]:
+        if i==1:
+            break
+        else:
+            if i not in [PAD_TOK, START_TOK, END_TOK]:
+                if i != UNK_TOK:
+                    text.append(vocab[i])
+                else:
+                    text.append('??')
+    return " ".join(text)
+
 def evaluate(text):
-    text = SRC_tokenizer.texts_to_sequences([text])
-    text = pad_sequences(text, maxlen=ENCODER_LEN, padding='post', truncating='post')
-    decoder_input = [TRG_tokenizer.word_index['<sos>']]
-    input  = torch.tensor(text).to(device)
-    output = torch.tensor([decoder_input]).to(device)
+    tokenizer = tokenize_en
+    token = tokenizer(text)
+    input = stoi(SRC_tokenizer.vocab.itos, token, ENCODER_LEN).to(device)
+    output = torch.LongTensor(1, 1).fill_(START_TOK).to(device)
     
     for i in range(DECODER_LEN):
         predictions = trained_model(input, output)
@@ -687,7 +714,7 @@ def evaluate(text):
                             
         # PAD, UNK, START 토큰 제외
         predicted_id = torch.argmax(predictions[:,:,3:], axis=-1) + 3
-        if predicted_id == 3:  # token id of <EOS>
+        if predicted_id == END_TOK:
             predicted_id = predicted_id
             break
         output = torch.cat((output, predicted_id),-1)
@@ -695,15 +722,11 @@ def evaluate(text):
 
 def predict(text):
     prediction = evaluate(text)
-    out_list = prediction.tolist()
-    out_list[0].pop(0)
-    output_indexes = out_list[0]
-    predicted_sentence = TRG_tokenizer.sequences_to_texts([output_indexes])
-    
+    predicted_sentence = itos(TRG_tokenizer.vocab.itos, prediction)
     return predicted_sentence
 
 for idx in (11, 21, 31, 41, 51):
     print("Input        :", raw_src[idx])
-    print("Prediction   :", predict(raw_src[idx]))
+    print("Prediction   :", predict(str(raw_src[idx])))
     print("Ground Truth :", raw_trg[idx],"\n")
     

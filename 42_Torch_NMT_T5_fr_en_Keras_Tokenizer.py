@@ -432,6 +432,7 @@ class MultiHeadAttentionLayer(nn.Module):
         # 5. WO에 해당하는 밀집층 지나기
         # (batch_size, query의 문장 길이, hid_dim)
         outputs = self.out(concat_attention)
+
         return outputs
 
 """ feed forward """
@@ -517,11 +518,11 @@ class DecoderLayer(nn.Module):
         attention2 = self.attn_2(
             {'query': attention1, 'key': enc_outputs, 'value': enc_outputs, 'mask': padding_mask})
         attention2 = self.dropout2(attention2)
-        attention2 = self.layernorm2(attention1 + attention2)  # (batch_size, processed_trgeq_len, hid_dim)
+        attention2 = self.layernorm2(attention1 + attention2)  # (batch_size, target_seq_len, hid_dim)
 
-        ffn_outputs = self.ffn(attention2)  # (batch_size, processed_trgeq_len, hid_dim)
+        ffn_outputs = self.ffn(attention2)  # (batch_size, target_seq_len, hid_dim)
         ffn_outputs = self.dropout3(ffn_outputs)
-        ffn_outputs = self.layernorm3(attention2 + ffn_outputs)  # (batch_size, processed_trgeq_len, hid_dim)
+        ffn_outputs = self.layernorm3(attention2 + ffn_outputs)  # (batch_size, target_seq_len, hid_dim)
 
         return ffn_outputs  
 

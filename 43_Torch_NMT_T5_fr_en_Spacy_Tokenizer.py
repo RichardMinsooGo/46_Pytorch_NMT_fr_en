@@ -33,9 +33,6 @@ BATCH_SIZE  = 128
 
 N_EPOCHS = 20
 
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.preprocessing.text import Tokenizer
-
 import urllib3
 import zipfile
 import shutil
@@ -161,68 +158,73 @@ train_df = pd.concat([df1, df2], axis=1)
 
 print('Translation Pair :',len(train_df)) # 리뷰 개수 출력
 
-raw_src  = train_df['SRC']
-raw_trg  = train_df['TRG']
+raw_src = train_df['SRC'].tolist()
+raw_trg = train_df['TRG'].tolist()
 
-src_sentence  = raw_src.apply(lambda x: "<SOS> " + str(x) + " <EOS>")
-trg_sentence  = raw_trg.apply(lambda x: "<SOS> "+ x + " <EOS>")
+train_df.to_csv('/content/Translation_dataset.csv',index = False)
 
-filters = '!"#$%&()*+,-./:;=?@[\\]^_`{|}~\t\n'
-oov_token = '<unk>'
+!python -m spacy download en
+!python -m spacy download fr
+import spacy
+spacy_en = spacy.load('en')
+spacy_fr = spacy.load('fr')
 
-# Define tokenizer
-SRC_tokenizer = tf.keras.preprocessing.text.Tokenizer(filters = filters, oov_token=oov_token)
-TRG_tokenizer = tf.keras.preprocessing.text.Tokenizer(filters = filters, oov_token=oov_token)
+def tokenize_en(text):
+    """
+    Tokenizes English text from a string into a list of strings
+    """
+    return [tok.text for tok in spacy_en.tokenizer(text)]
 
-SRC_tokenizer.fit_on_texts(src_sentence)
-TRG_tokenizer.fit_on_texts(trg_sentence)
+def tokenize_fr(text):
+    """
+    Tokenizes French text from a string into a list of strings
+    """
+    return [tok.text for tok in spacy_fr.tokenizer(text)]
 
-n_enc_vocab = len(SRC_tokenizer.word_index) + 1
-n_dec_vocab = len(TRG_tokenizer.word_index) + 1
+SRC_tokenizer = data.Field(sequential=True, use_vocab=True, lower=True, tokenize=tokenize_en,
+    batch_first=True, init_token="<SOS>", eos_token="<EOS>", fix_length=ENCODER_LEN)
+
+TRG_tokenizer = data.Field(sequential=True, use_vocab=True, lower=True, tokenize=tokenize_fr,
+    batch_first=True, init_token="<SOS>", eos_token="<EOS>", fix_length=DECODER_LEN)
+
+trainset = data.TabularDataset(
+        path='/content/Translation_dataset.csv', format='csv', skip_header=False,
+        fields=[('SRC', SRC_tokenizer),('TRG', TRG_tokenizer)])
+
+print(vars(trainset[2]))
+
+print('훈련 샘플의 개수 : {}'.format(len(trainset)))
+
+SRC_tokenizer.build_vocab(trainset.SRC, min_freq = 2) # 단어 집합 생성
+TRG_tokenizer.build_vocab(trainset.TRG, min_freq = 2) # 단어 집합 생성
+
+# Difine HyperParameter
+n_enc_vocab = len(SRC_tokenizer.vocab)
+n_dec_vocab = len(TRG_tokenizer.vocab)
 
 print('Encoder 단어 집합의 크기 :',n_enc_vocab)
 print('Decoder 단어 집합의 크기 :',n_dec_vocab)
 
-lines = [
-  "It is winter and the weather is very cold.",
-  "Will this Christmas be a white Christmas?",
-  "Be careful not to catch a cold in winter and have a happy new year."
-]
-for line in lines:
-    txt_2_ids = SRC_tokenizer.texts_to_sequences([line])
-    ids_2_txt = SRC_tokenizer.sequences_to_texts(txt_2_ids)
-    print("Input     :", line)
-    print("txt_2_ids :", txt_2_ids)
-    print("ids_2_txt :", ids_2_txt[0],"\n")
 
-lines = [
-  "C'est l'hiver et il fait très froid.",
-  "Ce Noël sera-t-il un Noël blanc ?",
-  "Attention à ne pas attraper froid en hiver et bonne année."
-]
-for line in lines:
-    txt_2_ids = TRG_tokenizer.texts_to_sequences([line])
-    ids_2_txt = TRG_tokenizer.sequences_to_texts(txt_2_ids)
-    print("Input     :", line)
-    print("txt_2_ids :", txt_2_ids)
-    print("ids_2_txt :", ids_2_txt[0],"\n")
-    
-# 토큰화 / 정수 인코딩 / 시작 토큰과 종료 토큰 추가 / 패딩
-tokenized_inputs  = SRC_tokenizer.texts_to_sequences(src_sentence)
-tokenized_outputs = TRG_tokenizer.texts_to_sequences(trg_sentence)
+SRC_PAD_TOK, SRC_UNK_TOK = SRC_tokenizer.vocab.stoi['<pad>'], SRC_tokenizer.vocab.stoi['<unk>']
+PAD_TOK, START_TOK, END_TOK, UNK_TOK = TRG_tokenizer.vocab.stoi['<pad>'], TRG_tokenizer.vocab.stoi['<SOS>'], TRG_tokenizer.vocab.stoi['<EOS>'], TRG_tokenizer.vocab.stoi['<unk>']
 
-# 패딩
-tkn_sources = tf.keras.preprocessing.sequence.pad_sequences(tokenized_inputs,  maxlen=ENCODER_LEN, padding='post', truncating='post')
-tkn_targets = tf.keras.preprocessing.sequence.pad_sequences(tokenized_outputs, maxlen=DECODER_LEN, padding='post', truncating='post')
+"""
+print(SRC_tokenizer.vocab.stoi[SRC_tokenizer.pad_token])
+print(SRC_tokenizer.vocab.stoi[SRC_tokenizer.init_token])
+print(SRC_tokenizer.vocab.stoi[SRC_tokenizer.eos_token])
 
-tensors_src   = torch.tensor(tkn_sources).to(device)
-tensors_trg   = torch.tensor(tkn_targets).to(device)
+print(SRC_tokenizer.vocab.itos[1])
+print(SRC_tokenizer.vocab.itos[2])
+print(SRC_tokenizer.vocab.itos[3])
+"""
+# Define dataloader
+# dataloader batch has text and target item
 
-from torch.utils.data import TensorDataset   # 텐서데이터셋
-from torch.utils.data import DataLoader      # 데이터로더
+dataloader = data.BucketIterator(
+        trainset, batch_size=BATCH_SIZE,
+        shuffle=True, repeat=False, sort=False, device = device)
 
-dataset    = TensorDataset(tensors_src, tensors_trg)
-dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # Hyper-parameters
 n_layers  = 2     # 6
@@ -234,36 +236,6 @@ pe_source = 512
 pe_target = 512
 layer_norm_epsilon = 1e-12
 
-""" sinusoid position encoding """
-class get_sinusoid_encoding_table(nn.Module):
-    '''입력된 단어의 위치를 원백터정보에 더한다'''
-    def __init__(self, position, hid_dim):
-        super().__init__()
-
-        self.hid_dim = hid_dim  # 단어 백터의 원래 차원 수
-
-        # 입력 문장에서의 임베딩 벡터의 위치（pos）임베딩 벡터 내의 차원의 인덱스（i）
-        pe = torch.zeros(position, hid_dim)
-
-        # 학습시에는 GPU 사용
-        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        pe = pe.to(device)
-
-        for pos in range(position):
-            for i in range(0, hid_dim, 2):
-                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/hid_dim)))
-                pe[pos, i + 1] = math.cos(pos /
-                                          (10000 ** ((2 * i)/hid_dim)))
-
-        # pe의 선두에 미니배치 차원을 추가한다
-        self.pe = pe.unsqueeze(0)
-
-        self.pe.requires_grad = False
-
-    def forward(self, x):
-        # 입력x와 Positonal Encoding을 더한다
-        ret = math.sqrt(self.hid_dim)*x + self.pe[:, :x.size(1)]
-        return ret
 
 """ attention pad mask """
 def create_padding_mask(x):
@@ -292,7 +264,7 @@ class ScaledDotProductAttention(nn.Module):
     key, value must have matching penultimate dimension, i.e.: seq_len_k = seq_len_v.
     The mask has different shapes depending on its type(padding or look ahead)
     but it must be broadcastable for addition.
-    
+
     query, key, value의 leading dimensions은 동일해야 합니다.
     key, value 에는 일치하는 끝에서 두 번째 차원이 있어야 합니다(예: seq_len_k = seq_len_v).
     MASK는 유형에 따라 모양이 다릅니다(패딩 혹은 미리보기(=look ahead)).
@@ -311,9 +283,11 @@ class ScaledDotProductAttention(nn.Module):
     def __init__(self):
         super().__init__()
         self.dropout = nn.Dropout(0.3)
+        self.num_buckets = 32
+        self.relative_attention_bias = torch.nn.Embedding(self.num_buckets, n_heads)
         
-    def forward(self, query, key, value, mask):
-
+    def forward(self, query, key, value, mask, bidirectional=True):
+        qlen, klen = query.size(-2), key.size(-2)
         # Q와 K의 곱. 어텐션 스코어 행렬.
         matmul_qk = torch.matmul(query, torch.transpose(key,2,3))
 
@@ -322,6 +296,9 @@ class ScaledDotProductAttention(nn.Module):
         dk = key.shape[-1]
         scaled_attention_logits = matmul_qk / math.sqrt(dk)
 
+        position_bias = self.compute_bias(qlen, klen, bidirectional=bidirectional)
+        scaled_attention_logits += position_bias
+        
         # 마스킹. 어텐션 스코어 행렬의 마스킹 할 위치에 매우 작은 음수값을 넣는다.
         # 매우 작은 값이므로 소프트맥스 함수를 지나면 행렬의 해당 위치의 값은 0이 된다.
         if mask is not None:
@@ -335,6 +312,48 @@ class ScaledDotProductAttention(nn.Module):
         output = torch.matmul(attention_weights, value)
 
         return output, attention_weights
+    
+    def compute_bias(self, qlen, klen, bidirectional=True):
+        context_position = torch.arange(qlen, dtype=torch.long)[:, None]
+        memory_position = torch.arange(klen, dtype=torch.long)[None, :]
+        # (qlen, klen)
+        relative_position = memory_position - context_position
+        # (qlen, klen)
+        rp_bucket = self._relative_position_bucket(
+            relative_position,  # shape (qlen, klen)
+            num_buckets=self.num_buckets,
+            bidirectional=bidirectional
+        )
+        # (qlen, klen)
+        rp_bucket = rp_bucket.to(self.relative_attention_bias.weight.device)
+        # (qlen, klen, n_head)
+        values = self.relative_attention_bias(rp_bucket)
+        # (1, n_head, qlen, klen)
+        values = values.permute([2, 0, 1]).unsqueeze(0)
+        return values
+
+    def _relative_position_bucket(self, relative_position, bidirectional=True, num_buckets=32, max_distance=128):
+        ret = 0
+        n = -relative_position
+        if bidirectional:
+            num_buckets //= 2
+            ret += (n < 0).to(torch.long) * num_buckets  # mtf.to_int32(mtf.less(n, 0)) * num_buckets
+            n = torch.abs(n)
+        else:
+            n = torch.max(n, torch.zeros_like(n))
+
+        # half of the buckets are for exact increments in positions
+        max_exact = num_buckets // 2
+        is_small = n < max_exact
+
+        # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
+        val_if_large = max_exact + (
+                torch.log(n.float() / max_exact) / math.log(max_distance / max_exact) * (num_buckets - max_exact)
+        ).to(torch.long)
+        val_if_large = torch.min(val_if_large, torch.full_like(val_if_large, num_buckets - 1))
+
+        ret += torch.where(is_small, n, val_if_large)
+        return ret
 
 """ multi head attention """
 class MultiHeadAttentionLayer(nn.Module):
@@ -364,7 +383,7 @@ class MultiHeadAttentionLayer(nn.Module):
             inputs, (batch_size, -1, self.n_heads, self.depth))
         return torch.transpose(inputs, 1,2)
 
-    def forward(self, inputs):
+    def forward(self, inputs, bidirectional=False):
         query, key, value, mask = inputs['query'], inputs['key'], inputs['value'], inputs['mask']
         batch_size = query.shape[0]
         # 1. WQ, WK, WV에 해당하는 밀집층 지나기
@@ -386,7 +405,8 @@ class MultiHeadAttentionLayer(nn.Module):
         # 3. 스케일드 닷 프로덕트 어텐션. 앞서 구현한 함수 사용.
         # (batch_size, n_heads, query의 문장 길이, hid_dim/n_heads)
         # scaled_attention, _ = ScaledDotProductAttention(query, key, value, mask)
-        scaled_attention, _ = self.scaled_dot_attn(query, key, value, mask)
+        scaled_attention, _ = self.scaled_dot_attn(
+            query, key, value, mask, bidirectional = bidirectional)
         
         # (batch_size, query의 문장 길이, n_heads, hid_dim/n_heads)
         scaled_attention = torch.transpose(scaled_attention, 1,2)
@@ -446,15 +466,11 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         
         self.embedding    = nn.Embedding(n_enc_vocab, hid_dim)
-        self.pos_encoding = get_sinusoid_encoding_table(pe_source, hid_dim)
-
         self.enc_layers   = EncoderLayer()
         self.dropout1     = nn.Dropout(dropout)
 
     def forward(self, x, padding_mask):
         emb = self.embedding(x)  # (batch_size, input_seq_len, hid_dim)
-        emb *= math.sqrt(hid_dim)
-        emb = self.pos_encoding(emb)
         output = self.dropout1(emb)
 
         for i in range(n_layers):
@@ -503,14 +519,11 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         
         self.embedding    = nn.Embedding(n_dec_vocab, hid_dim)
-        self.pos_encoding = get_sinusoid_encoding_table(pe_target, hid_dim)
         self.dec_layers = DecoderLayer()
         self.dropout      = nn.Dropout(dropout)
         
     def forward(self, enc_output, dec_input, padding_mask, look_ahead_mask):
         emb = self.embedding(dec_input)
-        emb *= math.sqrt(hid_dim)
-        emb = self.pos_encoding(emb)
         output = self.dropout(emb)
         for i in range(n_layers):
             output = self.dec_layers(output, enc_output, padding_mask, look_ahead_mask)
@@ -600,14 +613,15 @@ def train(epoch, model, dataloader, optimizer, criterion, clip):
     epoch_loss = 0
     
     with tqdm_notebook(total=len(dataloader), desc=f"Train {epoch+1}") as pbar:    
-        for batch_idx, samples in enumerate(dataloader):
-            src_inputs, trg_outputs = samples
+        for batch in dataloader:
+            src_inputs  = batch.SRC.to(device)
+            trg_outputs = batch.TRG.to(device)
 
             with torch.set_grad_enabled(True):
                 # Transformer에 입력
                 logits_lm = model(src_inputs, trg_outputs)
 
-                pad = torch.LongTensor(trg_outputs.size(0), 1).fill_(0).to(device)
+                pad = torch.LongTensor(trg_outputs.size(0), 1).fill_(PAD_TOK).to(device)
                 preds_id = torch.transpose(logits_lm,1,2)
                 labels_lm = torch.cat((trg_outputs[:, 1:], pad), -1)
 
@@ -674,12 +688,36 @@ trained_model = Transformer(
     dropout     = dropout).to(device)
 trained_model.load_state_dict(torch.load('./checkpoints/transformermodel.pt'))
 
+def stoi(vocab, token, max_len):
+    #
+    indices=[]
+    token.extend(['<pad>'] * (max_len - len(token)))
+    for string in token:
+        if string in vocab:
+            i = vocab.index(string)
+        else:
+            i = 0
+        indices.append(i)
+    return torch.LongTensor(indices).unsqueeze(0)
+
+def itos(vocab, indices):
+    text = []
+    for i in indices.cpu()[0]:
+        if i==1:
+            break
+        else:
+            if i not in [PAD_TOK, START_TOK, END_TOK]:
+                if i != UNK_TOK:
+                    text.append(vocab[i])
+                else:
+                    text.append('??')
+    return " ".join(text)
+
 def evaluate(text):
-    text = SRC_tokenizer.texts_to_sequences([text])
-    text = pad_sequences(text, maxlen=ENCODER_LEN, padding='post', truncating='post')
-    decoder_input = [TRG_tokenizer.word_index['<sos>']]
-    input  = torch.tensor(text).to(device)
-    output = torch.tensor([decoder_input]).to(device)
+    tokenizer = tokenize_en
+    token = tokenizer(text)
+    input = stoi(SRC_tokenizer.vocab.itos, token, ENCODER_LEN).to(device)
+    output = torch.LongTensor(1, 1).fill_(START_TOK).to(device)
     
     for i in range(DECODER_LEN):
         predictions = trained_model(input, output)
@@ -687,7 +725,7 @@ def evaluate(text):
                             
         # PAD, UNK, START 토큰 제외
         predicted_id = torch.argmax(predictions[:,:,3:], axis=-1) + 3
-        if predicted_id == 3:  # token id of <EOS>
+        if predicted_id == END_TOK:
             predicted_id = predicted_id
             break
         output = torch.cat((output, predicted_id),-1)
@@ -695,15 +733,11 @@ def evaluate(text):
 
 def predict(text):
     prediction = evaluate(text)
-    out_list = prediction.tolist()
-    out_list[0].pop(0)
-    output_indexes = out_list[0]
-    predicted_sentence = TRG_tokenizer.sequences_to_texts([output_indexes])
-    
+    predicted_sentence = itos(TRG_tokenizer.vocab.itos, prediction)
     return predicted_sentence
 
 for idx in (11, 21, 31, 41, 51):
     print("Input        :", raw_src[idx])
-    print("Prediction   :", predict(raw_src[idx]))
+    print("Prediction   :", predict(str(raw_src[idx])))
     print("Ground Truth :", raw_trg[idx],"\n")
     
